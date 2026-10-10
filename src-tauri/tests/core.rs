@@ -278,7 +278,25 @@ fn project_sync_is_bidirectional_incremental_and_does_not_copy_generated_targets
         .unwrap();
     }
     let second = bridge_core::project_sync::plan(&store, &cwd).unwrap();
-    assert_eq!(second.items.len(), 4);
+    assert_eq!(
+        second.items.len(),
+        4,
+        "second plan: {}",
+        second
+            .items
+            .iter()
+            .map(|item| format!(
+                "{}:{}->{} {} {} [{}]",
+                item.source.label(),
+                item.id,
+                item.target.label(),
+                item.mode,
+                item.action,
+                item.reason
+            ))
+            .collect::<Vec<_>>()
+            .join("; ")
+    );
     assert!(second
         .items
         .iter()
