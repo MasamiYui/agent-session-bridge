@@ -14,9 +14,10 @@ test('organize and restore without removing source history',async({page})=>{
  await page.getByLabel('Display name',{exact:true}).fill('My investigation');
  await page.getByRole('button',{name:'Save',exact:true}).click();
  await expect(page.getByRole('heading',{name:'My investigation',level:2})).toBeVisible();
- await page.getByTitle('Archive',{exact:true}).click();
- await page.getByRole('button',{name:'Archive',exact:true}).click();
+ await page.locator('.reader-actions').getByTitle('Archive',{exact:true}).click();
+ await page.locator('.sidebar').getByRole('button',{name:'Archive',exact:true}).click();
  await expect(page.getByText('My investigation',{exact:true}).first()).toBeVisible();
+ await page.locator('.session-select').first().click();
  await page.getByTitle('Restore',{exact:true}).click();
  await page.getByRole('button',{name:/All sessions/}).click();
  await expect(page.getByText('My investigation',{exact:true}).first()).toBeVisible();
@@ -28,6 +29,65 @@ test('switch language and theme',async({page})=>{
  await page.getByRole('button',{name:'Save',exact:true}).click();
  await expect(page.getByRole('button',{name:'设置',exact:true})).toBeVisible();
  await expect(page.locator('html')).toHaveAttribute('data-theme','dark');
+});
+test('browse projects, combine source filters and return to the searched directory',async({page})=>{
+ await page.getByRole('button',{name:'Projects',exact:true}).click();
+ await expect(page.locator('.project-row')).toHaveCount(3);
+ await page.getByRole('textbox',{name:'Search projects…'}).fill('/workspace/bridge');
+ await expect(page.locator('.project-row')).toHaveCount(1);
+ await page.locator('.project-row').click();
+ await expect(page.locator('.session-row')).toHaveCount(3);
+ await page.getByLabel('Source',{exact:true}).selectOption('claude');
+ await expect(page.locator('.session-row')).toHaveCount(2);
+ await expect(page.locator('.session-row-top')).toContainText(['Claude Code','Claude Code']);
+ await page.locator('.session-select').first().click();
+ await expect(page.locator('.reader-header h2')).toBeVisible();
+ await page.getByRole('button',{name:'Back to projects',exact:true}).click();
+ await expect(page.getByRole('textbox',{name:'Search projects…'})).toHaveValue('/workspace/bridge');
+ await expect(page.locator('.project-row')).toHaveCount(1);
+ await expect(page.locator('.reader-header')).toHaveCount(0);
+ await page.locator('.project-row').click();
+ await expect(page.getByLabel('Source',{exact:true})).toHaveValue('');
+ await expect(page.locator('.session-row')).toHaveCount(3);
+});
+test('conversation search does not hide projects and navigation clears hidden selections',async({page})=>{
+ await page.getByRole('textbox',{name:'Search conversations…'}).fill('cache');
+ await expect(page.locator('.session-row')).toHaveCount(1);
+ await page.getByRole('button',{name:'Select visible',exact:true}).click();
+ await page.getByRole('button',{name:'Projects',exact:true}).click();
+ await expect(page.locator('.project-row')).toHaveCount(3);
+ await page.getByRole('button',{name:'All sessions',exact:true}).click();
+ await expect(page.locator('.session-row')).toHaveCount(5);
+ await expect(page.getByRole('button',{name:'Select visible',exact:true})).toBeVisible();
+ await page.getByLabel('Source',{exact:true}).selectOption('claude');
+ await expect(page.locator('.session-row')).toHaveCount(2);
+ await page.getByRole('button',{name:'Select visible',exact:true}).click();
+ await page.getByLabel('Source',{exact:true}).selectOption('codex');
+ await expect(page.locator('.session-row')).toHaveCount(3);
+ await expect(page.getByRole('button',{name:'Select visible',exact:true})).toBeVisible();
+});
+test('returning from a project restores directory scroll position',async({page})=>{
+ await page.setViewportSize({width:1024,height:500});
+ await page.getByRole('button',{name:'Projects',exact:true}).click();
+ const row=page.locator('.project-row').last();
+ await row.scrollIntoViewIfNeeded();
+ const position=await page.locator('.project-list').evaluate(el=>el.scrollTop);
+ expect(position).toBeGreaterThan(0);
+ await row.click();
+ await page.getByRole('button',{name:'Back to projects',exact:true}).click();
+ await expect.poll(()=>page.locator('.project-list').evaluate(el=>el.scrollTop)).toBe(position);
+});
+test('project navigation remains usable in a short laptop window',async({page})=>{
+ await page.setViewportSize({width:1024,height:600});
+ await page.getByRole('button',{name:'Projects',exact:true}).click();
+ await expect(page.locator('.project-row')).toHaveCount(3);
+ await expect(page.getByRole('button',{name:'Settings',exact:true})).toBeInViewport();
+ const dimensions=await page.evaluate(()=>({width:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth,rail:document.querySelector('.sidebar')!.getBoundingClientRect().width}));
+ expect(dimensions.scroll).toBe(dimensions.width);
+ expect(dimensions.rail).toBeLessThanOrEqual(96);
+ await page.locator('.project-row').first().click();
+ await expect(page.getByRole('button',{name:'Back to projects',exact:true})).toBeInViewport();
+ await expect(page.getByLabel('Source',{exact:true})).toBeInViewport();
 });
 test('batch handoff reports completion and blocks unverified native conversion',async({page})=>{
  await page.getByRole('button',{name:'Select visible',exact:true}).click();
