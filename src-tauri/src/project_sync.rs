@@ -57,17 +57,20 @@ fn canonical(cwd: &str) -> Result<String> {
 fn eligible(s: &SessionSummary, cwd: &str) -> bool {
     s.cwd == cwd && !s.organization.archived && !s.organization.removed && !s.source_archived
 }
+fn targets(source: Provider) -> [Provider; 2] {
+    match source {
+        Provider::Codex => [Provider::Claude, Provider::Antigravity],
+        Provider::Claude => [Provider::Codex, Provider::Antigravity],
+        Provider::Antigravity => [Provider::Codex, Provider::Claude],
+    }
+}
 fn classify(
     s: &SessionSummary,
-    _requested: &str,
+    target: Provider,
     canonical_cwd: &str,
     mode: &str,
     ops: &[Operation],
 ) -> ProjectSyncItem {
-    let target = match s.provider {
-        Provider::Codex => Provider::Claude,
-        Provider::Claude => Provider::Codex,
-    };
     let generated = ops.iter().any(|op| {
         op.result.as_ref().is_some_and(|r| {
             r.mode == "native"
@@ -124,8 +127,7 @@ pub fn plan(store: &Store, cwd: &str) -> Result<ProjectSyncPlan> {
     let normalized = canonical(cwd)?;
     store.scan()?;
     let settings = store.settings()?;
-    let codex = rpc::capability(Provider::Codex, &settings).native_verified;
-    let claude = rpc::capability(Provider::Claude, &settings).native_verified;
+    let verified = |provider| rpc::capability(provider, &settings).native_verified;
     let ops = operations(store)?;
     let mut items = Vec::new();
     for summary in store.list("")?.into_iter().filter(|s| eligible(s, cwd)) {
@@ -134,17 +136,19 @@ pub fn plan(store: &Store, cwd: &str) -> Result<ProjectSyncPlan> {
         if !eligible(&s.summary, cwd) {
             continue;
         }
-        let verified = match s.summary.provider {
-            Provider::Codex => claude,
-            Provider::Claude => codex,
-        };
-        items.push(classify(
-            &s.summary,
-            cwd,
-            &normalized,
-            if verified { "native" } else { "handoff" },
-            &ops,
-        ));
+        for target in targets(s.summary.provider) {
+            items.push(classify(
+                &s.summary,
+                target,
+                &normalized,
+                if verified(target) {
+                    "native"
+                } else {
+                    "handoff"
+                },
+                &ops,
+            ));
+        }
     }
     Ok(ProjectSyncPlan {
         cwd: cwd.into(),
@@ -169,7 +173,7 @@ pub fn execute(
     }
     let item = classify(
         &s.summary,
-        cwd,
+        request.target,
         &normalized,
         &request.mode,
         &operations(store)?,
@@ -192,11 +196,11 @@ pub fn execute(
     migration::execute(store, request, expected)
 }
 pub fn validate_items(items: &[ProjectSyncItem]) -> Result<()> {
-    let mut keys = HashSet::new();
+    let mut copies = HashSet::new();
     if items.is_empty()
         || items
             .iter()
-            .any(|i| i.action != "create" || !keys.insert(&i.key))
+            .any(|i| i.action != "create" || !copies.insert((&i.key, i.target)))
     {
         return Err(error(
             "Preview pending project sessions before starting sync",

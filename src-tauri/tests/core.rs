@@ -252,11 +252,14 @@ fn project_sync_is_bidirectional_incremental_and_does_not_copy_generated_targets
         .unwrap();
     let cwd = project.to_string_lossy().into_owned();
     let first = bridge_core::project_sync::plan(&store, &cwd).unwrap();
-    assert_eq!(first.items.len(), 2);
-    assert!(first
-        .items
-        .iter()
-        .all(|item| item.action == "create" && item.mode == "handoff"));
+    assert_eq!(first.items.len(), 4);
+    assert!(first.items.iter().all(|item| item.action == "create"
+        && item.mode
+            == if item.target == Provider::Antigravity {
+                "native"
+            } else {
+                "handoff"
+            }));
     for item in &first.items {
         bridge_core::project_sync::execute(
             &store,
@@ -274,7 +277,7 @@ fn project_sync_is_bidirectional_incremental_and_does_not_copy_generated_targets
         .unwrap();
     }
     let second = bridge_core::project_sync::plan(&store, &cwd).unwrap();
-    assert_eq!(second.items.len(), 2);
+    assert_eq!(second.items.len(), 4);
     assert!(second
         .items
         .iter()
@@ -295,7 +298,7 @@ fn project_sync_is_bidirectional_incremental_and_does_not_copy_generated_targets
             .iter()
             .filter(|item| item.action == "create")
             .count(),
-        1
+        2
     );
 
     let generated = t.path().join("codex/sessions/2026/10/10/generated.jsonl");
@@ -472,4 +475,203 @@ fn mixed_paginated_items_and_empty_assistant_chunks_are_retained() {
         parser::parse(&path, None).unwrap().messages[0].blocks[0].text,
         "Final chunk"
     );
+}
+
+fn proto_varint(mut value: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    loop {
+        let mut byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value > 0 {
+            byte |= 0x80;
+        }
+        out.push(byte);
+        if value == 0 {
+            break;
+        }
+    }
+    out
+}
+fn proto_key(field: u64, wire: u8) -> Vec<u8> {
+    proto_varint((field << 3) | u64::from(wire))
+}
+fn proto_bytes(field: u64, bytes: &[u8]) -> Vec<u8> {
+    let mut out = proto_key(field, 2);
+    out.extend(proto_varint(bytes.len() as u64));
+    out.extend(bytes);
+    out
+}
+fn proto_int(field: u64, value: u64) -> Vec<u8> {
+    let mut out = proto_key(field, 0);
+    out.extend(proto_varint(value));
+    out
+}
+fn proto_string(field: u64, value: &str) -> Vec<u8> {
+    proto_bytes(field, value.as_bytes())
+}
+#[test]
+fn antigravity_sqlite_steps_become_readable_project_sessions() {
+    let t = tempfile::tempdir().unwrap();
+    let home = t.path().join("antigravity");
+    let project = t.path().join("project");
+    fs::create_dir_all(home.join("conversations")).unwrap();
+    fs::create_dir(&project).unwrap();
+    let id = "11111111-1111-4111-8111-111111111111";
+    let database = home.join(format!("conversations/{id}.db"));
+    let connection = rusqlite::Connection::open(&database).unwrap();
+    connection
+        .execute_batch(
+            "CREATE TABLE steps(idx INTEGER PRIMARY KEY,step_type INTEGER,step_payload BLOB)",
+        )
+        .unwrap();
+    let stamp = proto_bytes(
+        1,
+        &proto_int(1, 1_791_600_000)
+            .into_iter()
+            .chain(proto_int(2, 0))
+            .collect::<Vec<_>>(),
+    );
+    let meta = proto_bytes(5, &proto_bytes(1, &stamp));
+    let user_body = proto_string(2, "Investigate the Antigravity index")
+        .into_iter()
+        .chain(proto_string(3, "duplicate"))
+        .collect::<Vec<_>>();
+    let user = proto_int(1, 14)
+        .into_iter()
+        .chain(meta.clone())
+        .chain(proto_bytes(19, &user_body))
+        .collect::<Vec<_>>();
+    let assistant = proto_int(1, 15)
+        .into_iter()
+        .chain(meta.clone())
+        .chain(proto_bytes(20, &proto_string(1, "The index is readable.")))
+        .collect::<Vec<_>>();
+    let call = proto_string(1, "call-1")
+        .into_iter()
+        .chain(proto_string(2, "search_web"))
+        .chain(proto_string(3, "{\"query\":\"index\"}"))
+        .collect::<Vec<_>>();
+    let result = proto_bytes(2, &proto_string(1, "one matching conversation"));
+    let tool = proto_int(1, 132)
+        .into_iter()
+        .chain(proto_bytes(
+            5,
+            &proto_bytes(1, &stamp)
+                .into_iter()
+                .chain(proto_bytes(4, &call))
+                .collect::<Vec<_>>(),
+        ))
+        .chain(proto_bytes(140, &result))
+        .collect::<Vec<_>>();
+    let failure = proto_int(1, 17)
+        .into_iter()
+        .chain(meta)
+        .chain(proto_bytes(
+            24,
+            &proto_bytes(3, &proto_string(2, "Execution stopped")),
+        ))
+        .collect::<Vec<_>>();
+    for (index, kind, payload) in [
+        (0i64, 14i64, user),
+        (1, 15, assistant),
+        (2, 132, tool),
+        (3, 17, failure),
+    ] {
+        connection
+            .execute(
+                "INSERT INTO steps(idx,step_type,step_payload) VALUES(?1,?2,?3)",
+                rusqlite::params![index, kind, payload],
+            )
+            .unwrap();
+    }
+    let summaries = rusqlite::Connection::open(home.join("conversation_summaries.db")).unwrap();
+    summaries
+        .execute_batch("CREATE TABLE conversation_summaries(conversation_id TEXT PRIMARY KEY,title TEXT,preview TEXT,workspace_uris TEXT)")
+        .unwrap();
+    summaries
+        .execute(
+            "INSERT INTO conversation_summaries(conversation_id,title,preview,workspace_uris) VALUES(?1,'Readable index','preview',?2)",
+            rusqlite::params![id, json!([format!("file://{}", project.display())]).to_string()],
+        )
+        .unwrap();
+    let session = parser::parse(&database, Some(Provider::Antigravity)).unwrap();
+    assert_eq!(session.summary.title, "Readable index");
+    assert_eq!(session.summary.cwd, project.to_string_lossy());
+    assert_eq!(
+        session.messages[0].blocks[0].text,
+        "Investigate the Antigravity index"
+    );
+    assert_eq!(session.messages[1].blocks[0].text, "The index is readable.");
+    assert_eq!(session.messages[2].blocks[0].name, "search_web");
+    assert_eq!(
+        session.messages[3].blocks[0].text,
+        "one matching conversation"
+    );
+    assert!(session.messages[4].blocks[0].is_error);
+    let store = Store::new(t.path().join("bridge")).unwrap();
+    store
+        .save_settings(&Settings {
+            codex_home: t.path().join("codex").to_string_lossy().into(),
+            claude_home: t.path().join("claude").to_string_lossy().into(),
+            antigravity_home: home.to_string_lossy().into(),
+            ..Default::default()
+        })
+        .unwrap();
+    assert!(store.scan().unwrap().is_empty());
+    let listed = store.list("matching conversation").unwrap();
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0].provider, Provider::Antigravity);
+    let request = MigrationRequest {
+        key: listed[0].key.clone(),
+        target: Provider::Antigravity,
+        mode: "native".into(),
+        cwd: project.to_string_lossy().into(),
+        duplicate: false,
+        handoff_text: None,
+    };
+    let written = migration::execute(&store, &request, &listed[0].fingerprint).unwrap();
+    assert_ne!(written.target_id, id);
+    let copied = parser::parse(
+        std::path::Path::new(&written.target_path),
+        Some(Provider::Antigravity),
+    )
+    .unwrap();
+    assert_eq!(copied.summary.provider, Provider::Antigravity);
+    assert_eq!(
+        copied.summary.cwd,
+        fs::canonicalize(&project).unwrap().to_string_lossy()
+    );
+    assert_eq!(
+        copied.messages[0].blocks[0].text,
+        "Investigate the Antigravity index"
+    );
+    assert_eq!(copied.messages[1].blocks[0].text, "The index is readable.");
+    assert_eq!(copied.messages[2].blocks[0].name, "search_web");
+    assert_eq!(
+        copied.messages[3].blocks[0].text,
+        "one matching conversation"
+    );
+    assert!(copied.messages[4].blocks[0].is_error);
+    let plan = bridge_core::project_sync::plan(&store, &project.to_string_lossy()).unwrap();
+    assert!(plan
+        .items
+        .iter()
+        .any(|item| item.source == Provider::Antigravity
+            && item.target == Provider::Codex
+            && item.action == "create"));
+    assert!(plan
+        .items
+        .iter()
+        .any(|item| item.source == Provider::Antigravity
+            && item.target == Provider::Claude
+            && item.action == "create"));
+    let handoff = MigrationRequest {
+        target: Provider::Claude,
+        mode: "handoff".into(),
+        ..request
+    };
+    let result = migration::execute(&store, &handoff, &listed[0].fingerprint).unwrap();
+    assert!(fs::read_to_string(result.target_path)
+        .unwrap()
+        .contains("Investigate the Antigravity index"));
 }

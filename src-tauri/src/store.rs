@@ -151,6 +151,10 @@ impl Store {
                 Provider::Claude,
                 vec![PathBuf::from(&settings.claude_home).join("projects")],
             ),
+            (
+                Provider::Antigravity,
+                vec![PathBuf::from(&settings.antigravity_home).join("conversations")],
+            ),
             (Provider::Codex, vec![self.root.join("imports")]),
         ] {
             for root in roots {
@@ -166,9 +170,13 @@ impl Store {
                         }
                     };
                     let path = entry.path();
-                    if !entry.file_type().is_file()
-                        || path.extension().and_then(|x| x.to_str()) != Some("jsonl")
-                    {
+                    let extension = path.extension().and_then(|x| x.to_str());
+                    let expected = if provider == Provider::Antigravity {
+                        "db"
+                    } else {
+                        "jsonl"
+                    };
+                    if !entry.file_type().is_file() || extension != Some(expected) {
                         continue;
                     }
                     if path.components().any(|x| x.as_os_str() == "subagents") {

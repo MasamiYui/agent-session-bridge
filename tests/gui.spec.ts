@@ -36,10 +36,14 @@ test('browse projects, combine source filters and return to the searched directo
  await page.getByRole('textbox',{name:'Search projects…'}).fill('/workspace/bridge');
  await expect(page.locator('.project-row')).toHaveCount(1);
  await page.locator('.project-open').click();
- await expect(page.locator('.session-row')).toHaveCount(3);
+ await expect(page.locator('.session-row')).toHaveCount(4);
  await page.getByLabel('Source',{exact:true}).selectOption('claude');
- await expect(page.locator('.session-row')).toHaveCount(2);
- await expect(page.locator('.session-row-top')).toContainText(['Claude Code','Claude Code']);
+ await expect(page.locator('.session-row')).toHaveCount(1);
+ await expect(page.locator('.session-row-top')).toContainText(['Claude Code']);
+ await page.getByLabel('Source',{exact:true}).selectOption('antigravity');
+ await expect(page.locator('.session-row')).toHaveCount(1);
+ await expect(page.locator('.session-row-top')).toContainText(['Antigravity']);
+ await page.getByLabel('Source',{exact:true}).selectOption('claude');
  await page.locator('.session-select').first().click();
  await expect(page.locator('.reader-header h2')).toBeVisible();
  await page.getByRole('button',{name:'Back to projects',exact:true}).click();
@@ -48,7 +52,7 @@ test('browse projects, combine source filters and return to the searched directo
  await expect(page.locator('.reader-header')).toHaveCount(0);
  await page.locator('.project-open').click();
  await expect(page.getByLabel('Source',{exact:true})).toHaveValue('');
- await expect(page.locator('.session-row')).toHaveCount(3);
+ await expect(page.locator('.session-row')).toHaveCount(4);
 });
 test('conversation search does not hide projects and navigation clears hidden selections',async({page})=>{
  await page.getByRole('textbox',{name:'Search conversations…'}).fill('cache');
@@ -57,13 +61,16 @@ test('conversation search does not hide projects and navigation clears hidden se
  await page.getByRole('button',{name:'Projects',exact:true}).click();
  await expect(page.locator('.project-row')).toHaveCount(3);
  await page.getByRole('button',{name:'All sessions',exact:true}).click();
- await expect(page.locator('.session-row')).toHaveCount(5);
+ await expect(page.locator('.session-row')).toHaveCount(6);
  await expect(page.getByRole('button',{name:'Select visible',exact:true})).toBeVisible();
  await page.getByLabel('Source',{exact:true}).selectOption('claude');
  await expect(page.locator('.session-row')).toHaveCount(2);
+ await page.getByLabel('Source',{exact:true}).selectOption('antigravity');
+ await expect(page.locator('.session-row')).toHaveCount(2);
+ await page.getByLabel('Source',{exact:true}).selectOption('claude');
  await page.getByRole('button',{name:'Select visible',exact:true}).click();
  await page.getByLabel('Source',{exact:true}).selectOption('codex');
- await expect(page.locator('.session-row')).toHaveCount(3);
+ await expect(page.locator('.session-row')).toHaveCount(2);
  await expect(page.getByRole('button',{name:'Select visible',exact:true})).toBeVisible();
 });
 test('returning from a project restores directory scroll position',async({page})=>{
@@ -94,9 +101,10 @@ test('project sync previews both directions and skips completed versions',async(
  await page.getByRole('button',{name:'Sync project bridge',exact:true}).click();
  await expect(page.getByRole('dialog',{name:'Sync project'})).toContainText('/workspace/bridge');
  await expect(page.getByRole('dialog')).toContainText('2 to sync / 2 sessions');
- await expect(page.getByRole('dialog')).toContainText('1 to sync / 1 sessions');
+ await expect(page.getByRole('dialog')).toContainText('4 to sync / 4 sessions');
+ await expect(page.getByRole('dialog')).toContainText('Antigravity');
  await page.getByRole('button',{name:'Start sync',exact:true}).click();
- await expect(page.locator('.job-row')).toHaveCount(3);
+ await expect(page.locator('.job-row')).toHaveCount(8);
  await expect(page.locator('.job-row').last()).toContainText('Completed');
  await page.getByRole('button',{name:'Sync project bridge',exact:true}).click();
  await expect(page.getByRole('dialog')).toContainText('No new conversations to sync.');
@@ -108,6 +116,6 @@ test('batch handoff reports completion and blocks unverified native conversion',
  await expect(page.getByRole('button',{name:/Native session/})).toBeDisabled();
  await expect(page.getByRole('textbox',{name:'Handoff document',exact:true})).toBeVisible();
  await page.getByRole('button',{name:'Create and continue',exact:true}).click();
- await expect(page.locator('.job-row')).toHaveCount(5);
+ await expect(page.locator('.job-row')).toHaveCount(6);
  await expect(page.locator('.job-row').last()).toContainText('Completed');
 });

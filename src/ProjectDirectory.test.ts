@@ -13,6 +13,7 @@ describe('project directory',()=>{
   expect(projects.map(p=>p.path)).toEqual(['/work/bridge','/other/bridge']);
   expect(projects[0].count).toBe(2);
   expect([...projects[0].providers]).toEqual(['codex','claude']);
+  expect(groupProjects([summary('/work/bridge','2026-10-04T12:00:00Z',{provider:'antigravity'})])[0].providers.has('antigravity')).toBe(true);
   expect(projects[0].updatedAt).toBe('2026-10-03T12:00:00Z');
  });
  it('only counts sessions that can be reached in the project view',()=>{

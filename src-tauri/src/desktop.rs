@@ -73,6 +73,7 @@ async fn capabilities(state: State<'_, AppState>) -> std::result::Result<Vec<Cap
         Ok(vec![
             rpc::capability(Provider::Codex, &settings),
             rpc::capability(Provider::Claude, &settings),
+            rpc::capability(Provider::Antigravity, &settings),
         ])
     })
     .await
@@ -399,6 +400,11 @@ async fn launch_session(
             return rpc::open_terminal(&r.resume_command, &r.cwd);
         }
         let s = store.session(&key.ok_or_else(|| error("Missing session"))?)?;
+        if s.summary.provider == Provider::Antigravity {
+            return Err(error(
+                "Antigravity has no verified resume command. The conversation is available in Antigravity's session list.",
+            ));
+        }
         let settings = store.settings()?;
         let command = rpc::session_command(
             s.summary.provider,

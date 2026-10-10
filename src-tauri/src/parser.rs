@@ -1,5 +1,6 @@
 use crate::model::*;
 use chrono::{DateTime, Utc};
+use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
@@ -51,6 +52,11 @@ fn block(kind: &str, id: &str, name: &str, input: Value, text: String) -> Block 
     }
 }
 pub fn parse(path: &Path, provider_hint: Option<Provider>) -> Result<Session> {
+    if path.extension().and_then(|x| x.to_str()) == Some("db")
+        || provider_hint == Some(Provider::Antigravity)
+    {
+        return parse_antigravity(path);
+    }
     let metadata = path.metadata()?;
     let mut records = Vec::new();
     let mut hash = Sha256::new();
@@ -119,6 +125,11 @@ pub fn parse(path: &Path, provider_hint: Option<Provider>) -> Result<Session> {
     match provider {
         Provider::Codex => parse_codex(&records, &mut session),
         Provider::Claude => parse_claude(&records, &mut session),
+        Provider::Antigravity => {
+            return Err(error(
+                "Antigravity sessions are SQLite databases, not JSONL transcripts",
+            ))
+        }
     };
     if session.summary.id.is_empty() {
         session.summary.id = path
@@ -576,6 +587,334 @@ fn parse_claude(records: &[Value], s: &mut Session) {
             _ => s.unknown_records += 1,
         }
     }
+}
+struct ProtoField {
+    number: u64,
+    value: ProtoValue,
+}
+enum ProtoValue {
+    Varint(u64),
+    Bytes(Vec<u8>),
+}
+fn protobuf(bytes: &[u8]) -> Vec<ProtoField> {
+    let mut i = 0;
+    let mut out = Vec::new();
+    while i < bytes.len() {
+        let Some((key, next)) = varint(bytes, i) else {
+            break;
+        };
+        let (number, wire) = (key >> 3, key & 7);
+        if number == 0 {
+            break;
+        }
+        i = next;
+        match wire {
+            0 => {
+                let Some((value, next)) = varint(bytes, i) else {
+                    break;
+                };
+                out.push(ProtoField {
+                    number,
+                    value: ProtoValue::Varint(value),
+                });
+                i = next;
+            }
+            2 => {
+                let Some((len, next)) = varint(bytes, i) else {
+                    break;
+                };
+                let end = next.saturating_add(len as usize);
+                if len > u64::try_from(bytes.len()).unwrap_or(u64::MAX) || end > bytes.len() {
+                    break;
+                }
+                out.push(ProtoField {
+                    number,
+                    value: ProtoValue::Bytes(bytes[next..end].to_vec()),
+                });
+                i = end;
+            }
+            5 => {
+                if i + 4 > bytes.len() {
+                    break;
+                }
+                i += 4;
+            }
+            1 => {
+                if i + 8 > bytes.len() {
+                    break;
+                }
+                i += 8;
+            }
+            _ => break,
+        }
+    }
+    out
+}
+fn varint(bytes: &[u8], mut i: usize) -> Option<(u64, usize)> {
+    let mut value = 0u64;
+    let mut shift = 0;
+    while i < bytes.len() && shift < 64 {
+        let byte = bytes[i];
+        i += 1;
+        value |= u64::from(byte & 0x7f) << shift;
+        if byte < 128 {
+            return Some((value, i));
+        }
+        shift += 7;
+    }
+    None
+}
+fn proto_bytes<'a>(fields: &'a [ProtoField], number: u64) -> Option<&'a [u8]> {
+    fields.iter().find_map(|field| match &field.value {
+        ProtoValue::Bytes(bytes) if field.number == number => Some(bytes.as_slice()),
+        _ => None,
+    })
+}
+fn readable(bytes: &[u8]) -> Option<&str> {
+    let text = std::str::from_utf8(bytes).ok()?;
+    let readable = !text.is_empty()
+        && text
+            .chars()
+            .all(|c| matches!(c, '\n' | '\t' | '\r') || !c.is_control())
+        && text.chars().filter(|c| !c.is_whitespace()).count() * 4 >= text.chars().count();
+    readable.then_some(text)
+}
+fn proto_text(fields: &[ProtoField], number: u64) -> String {
+    proto_bytes(fields, number)
+        .and_then(readable)
+        .unwrap_or_default()
+        .to_owned()
+}
+fn proto_varint(fields: &[ProtoField], number: u64) -> Option<u64> {
+    fields.iter().find_map(|field| match field.value {
+        ProtoValue::Varint(value) if field.number == number => Some(value),
+        _ => None,
+    })
+}
+fn proto_time(fields: &[ProtoField]) -> String {
+    proto_bytes(fields, 5)
+        .map(protobuf)
+        .and_then(|meta| proto_bytes(&meta, 1).map(protobuf))
+        .and_then(|stamp| proto_varint(&stamp, 1))
+        .and_then(|seconds| DateTime::from_timestamp(seconds as i64, 0))
+        .map(|time| time.to_rfc3339())
+        .unwrap_or_default()
+}
+fn json_text(value: &str) -> Value {
+    serde_json::from_str(value).unwrap_or(Value::String(value.into()))
+}
+/// Reads one Antigravity conversation database without writing to it.
+/// Step payloads are protobuf. Verified readable fields are: type 14 user text
+/// (field 19.2), type 15 assistant text (field 20.1), type 132 tool call and result
+/// (fields 5.4 and 140), type 17 execution errors (field 24.3) and type 23 summaries
+/// (field 30.5). Other step types stay counted so unrecognized history is visible.
+pub fn parse_antigravity(path: &Path) -> Result<Session> {
+    let metadata = path.metadata()?;
+    let hash = fingerprint(path)?;
+    let after = path.metadata()?;
+    if after.len() != metadata.len() || after.modified()? != metadata.modified()? {
+        return Err(error("Source changed while reading; refresh and retry"));
+    }
+    let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)
+        .map_err(|e| error(format!("Antigravity conversation could not be opened: {e}")))?;
+    let id = path
+        .file_stem()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    let mut title = String::new();
+    let mut cwd = String::new();
+    if let Some(home) = path.parent().and_then(|dir| dir.parent()) {
+        if let Ok(summaries) = Connection::open_with_flags(
+            home.join("conversation_summaries.db"),
+            OpenFlags::SQLITE_OPEN_READ_ONLY,
+        ) {
+            let row: std::result::Result<(String, String, String), _> = summaries.query_row(
+                "SELECT title,preview,workspace_uris FROM conversation_summaries WHERE conversation_id=?1",
+                [&id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            );
+            if let Ok((stored_title, preview, workspaces)) = row {
+                title = if stored_title.is_empty() {
+                    preview
+                } else {
+                    stored_title
+                };
+                cwd = serde_json::from_str::<Vec<String>>(&workspaces)
+                    .ok()
+                    .and_then(|values| {
+                        values
+                            .into_iter()
+                            .find(|value| value.starts_with("file://"))
+                    })
+                    .map(|uri| uri.trim_start_matches("file://").to_owned())
+                    .filter(|path| Path::new(path).is_absolute())
+                    .unwrap_or_default();
+            }
+        }
+    }
+    let mut query = connection
+        .prepare("SELECT idx,step_type,step_payload FROM steps ORDER BY idx")
+        .map_err(|e| error(format!("Antigravity steps could not be read: {e}")))?;
+    let rows = query
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, Vec<u8>>(2)?,
+            ))
+        })
+        .map_err(|e| error(e.to_string()))?;
+    let modified: DateTime<Utc> = metadata.modified()?.into();
+    let location = format!("{:x}", Sha256::digest(path.to_string_lossy().as_bytes()));
+    let mut session = Session {
+        summary: SessionSummary {
+            key: format!("antigravity:{id}:{}", &location[..12]),
+            id,
+            provider: Provider::Antigravity,
+            title,
+            cwd,
+            updated_at: modified.to_rfc3339(),
+            message_count: 0,
+            path: path.to_string_lossy().into(),
+            fingerprint: hash,
+            size: metadata.len(),
+            source_archived: false,
+            organization: Organization::default(),
+        },
+        messages: Vec::new(),
+        warnings: Vec::new(),
+        attachments: Vec::new(),
+        unknown_records: 0,
+        encrypted_reasoning: 0,
+        compacted: false,
+    };
+    for row in rows {
+        let (index, step_type, payload) = row.map_err(|e| error(e.to_string()))?;
+        let step = protobuf(&payload);
+        let time = proto_time(&step);
+        let id = index.to_string();
+        match step_type {
+            14 => {
+                let body = proto_bytes(&step, 19).map(protobuf).unwrap_or_default();
+                let text = proto_text(&body, 2);
+                if !text.is_empty() {
+                    push_message(
+                        &mut session,
+                        "user",
+                        &time,
+                        &id,
+                        vec![Block::text("text", text)],
+                    );
+                }
+            }
+            15 => {
+                let body = proto_bytes(&step, 20).map(protobuf).unwrap_or_default();
+                let text = proto_text(&body, 1);
+                if !text.is_empty() {
+                    push_message(
+                        &mut session,
+                        "assistant",
+                        &time,
+                        &id,
+                        vec![Block::text("text", text)],
+                    );
+                }
+            }
+            132 => {
+                let call = proto_bytes(&step, 5)
+                    .map(protobuf)
+                    .and_then(|meta| proto_bytes(&meta, 4).map(protobuf))
+                    .unwrap_or_default();
+                let call_id = proto_text(&call, 1);
+                let name = proto_text(&call, 2);
+                let input = proto_text(&call, 3);
+                if !name.is_empty() {
+                    push_message(
+                        &mut session,
+                        "assistant",
+                        &time,
+                        &call_id,
+                        vec![block(
+                            "toolCall",
+                            &call_id,
+                            &name,
+                            json_text(&input),
+                            String::new(),
+                        )],
+                    );
+                }
+                let result = proto_bytes(&step, 140).map(protobuf).unwrap_or_default();
+                let result_text = proto_bytes(&result, 2)
+                    .map(protobuf)
+                    .and_then(|body| proto_bytes(&body, 1).and_then(readable).map(str::to_owned));
+                if let Some(text) = result_text.filter(|text| !text.is_empty()) {
+                    push_message(
+                        &mut session,
+                        "tool",
+                        &time,
+                        &call_id,
+                        vec![block("toolResult", &call_id, &name, Value::Null, text)],
+                    );
+                }
+            }
+            17 => {
+                let body = proto_bytes(&step, 24).map(protobuf).unwrap_or_default();
+                let error = proto_bytes(&body, 3).map(protobuf).unwrap_or_default();
+                let text = proto_text(&error, 2);
+                if !text.is_empty() {
+                    let mut failure = Block::text("text", text);
+                    failure.is_error = true;
+                    push_message(&mut session, "assistant", &time, &id, vec![failure]);
+                }
+            }
+            23 => {
+                let body = proto_bytes(&step, 30).map(protobuf).unwrap_or_default();
+                let text = proto_text(&body, 5);
+                if !text.is_empty() {
+                    session.compacted = true;
+                    push_message(
+                        &mut session,
+                        "assistant",
+                        &time,
+                        &id,
+                        vec![Block::text("metadata", text)],
+                    );
+                }
+            }
+            _ => session.unknown_records += 1,
+        }
+    }
+    if session.summary.title.is_empty() {
+        session.summary.title = session
+            .messages
+            .iter()
+            .find(|message| message.role == "user")
+            .and_then(|message| message.blocks.iter().find(|block| block.kind == "text"))
+            .map(|block| block.text.chars().take(100).collect())
+            .unwrap_or_else(|| session.summary.id.clone());
+    }
+    session.summary.message_count = session.messages.len();
+    if session.messages.is_empty() {
+        return Err(error("No readable Antigravity messages"));
+    }
+    if session.unknown_records > 0 {
+        session.warnings.push(format!(
+            "{} unrecognized Antigravity steps retained in the original database",
+            session.unknown_records
+        ));
+    }
+    if session.compacted {
+        session.warnings.push(
+            "Antigravity continuation summaries are historical metadata, not a native session boundary"
+                .into(),
+        );
+    }
+    let changed = path.metadata()?;
+    if changed.len() != metadata.len() || changed.modified()? != metadata.modified()? {
+        return Err(error("Source changed while reading; refresh and retry"));
+    }
+    Ok(session)
 }
 pub fn markdown(session: &Session) -> String {
     let mut out = format!(

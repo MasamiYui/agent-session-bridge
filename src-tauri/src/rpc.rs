@@ -124,10 +124,19 @@ pub fn resolve_binary(binary: &str) -> String {
     binary.into()
 }
 pub fn capability(provider: Provider, settings: &Settings) -> Capability {
-    let executable = resolve_binary(match provider {
+    let binary = match provider {
         Provider::Codex => &settings.codex_bin,
         Provider::Claude => &settings.claude_bin,
-    });
+        Provider::Antigravity => {
+            return Capability {
+                provider,
+                executable: String::new(),
+                version: Some("local sqlite".into()),
+                native_verified: true,
+            }
+        }
+    };
+    let executable = resolve_binary(binary);
     let bin = executable.clone();
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -163,6 +172,7 @@ pub fn capability(provider: Provider, settings: &Settings) -> Capability {
     let native_verified = version.as_deref().is_some_and(|v| match provider {
         Provider::Codex => v == "codex-cli 0.160.1",
         Provider::Claude => v == "2.1.280 (Claude Code)",
+        Provider::Antigravity => true,
     });
     Capability {
         provider,
@@ -180,6 +190,7 @@ pub fn session_command(provider: Provider, settings: &Settings, args: &[&str]) -
             "CLAUDE_CONFIG_DIR",
             &settings.claude_home,
         ),
+        Provider::Antigravity => return String::new(),
     };
     let executable = resolve_binary(binary);
     let arguments = args.iter().map(|s| quote(s)).collect::<Vec<_>>().join(" ");

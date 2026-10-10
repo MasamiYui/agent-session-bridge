@@ -20,18 +20,24 @@ pub fn error(s: impl Into<String>) -> BridgeError {
     BridgeError::Message(s.into())
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Provider {
     Codex,
     Claude,
+    Antigravity,
 }
 impl Provider {
     pub fn label(self) -> &'static str {
         match self {
             Self::Codex => "codex",
             Self::Claude => "claude",
+            Self::Antigravity => "antigravity",
         }
+    }
+    /// Native session files can be created for every supported agent.
+    pub fn native_target(self) -> bool {
+        matches!(self, Self::Codex | Self::Claude | Self::Antigravity)
     }
 }
 
@@ -117,11 +123,20 @@ pub struct Session {
 pub struct Settings {
     pub codex_home: String,
     pub claude_home: String,
+    #[serde(default = "default_antigravity_home")]
+    pub antigravity_home: String,
     pub codex_bin: String,
     pub claude_bin: String,
     pub export_dir: String,
     pub language: String,
     pub theme: String,
+}
+fn default_antigravity_home() -> String {
+    dirs::home_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join(".gemini/antigravity")
+        .to_string_lossy()
+        .into()
 }
 impl Default for Settings {
     fn default() -> Self {
@@ -131,6 +146,7 @@ impl Default for Settings {
                 .unwrap_or_else(|_| home.join(".codex").to_string_lossy().into()),
             claude_home: std::env::var("CLAUDE_CONFIG_DIR")
                 .unwrap_or_else(|_| home.join(".claude").to_string_lossy().into()),
+            antigravity_home: default_antigravity_home(),
             codex_bin: "codex".into(),
             claude_bin: "claude".into(),
             export_dir: home.join("Downloads").to_string_lossy().into(),

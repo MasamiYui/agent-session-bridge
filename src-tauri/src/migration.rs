@@ -8,6 +8,7 @@ use crate::{
 use chrono::Utc;
 use rusqlite::{params, OptionalExtension};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::{
     collections::{HashMap, HashSet},
     fs,
@@ -99,6 +100,14 @@ pub fn plan(s: &Session, target: Provider, settings: &Settings) -> MigrationPlan
 }
 fn map_tool(b: &Block, target: Provider) -> Option<(String, Value)> {
     match target {
+        Provider::Antigravity => {
+            let input = if b.input.is_string() || b.input.is_object() {
+                b.input.clone()
+            } else {
+                json!({})
+            };
+            Some((b.name.clone(), input))
+        }
         Provider::Claude => match b.name.as_str() {
             "exec_command" => {
                 let cmd = b.input.get("cmd")?.as_str()?;
@@ -253,6 +262,235 @@ pub fn serialize_records(records: &[Value]) -> Result<Vec<u8>> {
     }
     Ok(out)
 }
+fn proto_varint(mut value: u64) -> Vec<u8> {
+    let mut out = Vec::new();
+    loop {
+        let mut byte = (value & 0x7f) as u8;
+        value >>= 7;
+        if value > 0 {
+            byte |= 0x80;
+        }
+        out.push(byte);
+        if value == 0 {
+            break;
+        }
+    }
+    out
+}
+fn proto_key(field: u64, wire: u8) -> Vec<u8> {
+    proto_varint((field << 3) | u64::from(wire))
+}
+fn proto_field(field: u64, value: u64) -> Vec<u8> {
+    let mut out = proto_key(field, 0);
+    out.extend(proto_varint(value));
+    out
+}
+fn proto_bytes(field: u64, bytes: &[u8]) -> Vec<u8> {
+    let mut out = proto_key(field, 2);
+    out.extend(proto_varint(bytes.len() as u64));
+    out.extend(bytes);
+    out
+}
+fn proto_text(field: u64, text: &str) -> Vec<u8> {
+    proto_bytes(field, text.as_bytes())
+}
+fn antigravity_time(message: &Message) -> Vec<u8> {
+    let seconds = chrono::DateTime::parse_from_rfc3339(&message.timestamp)
+        .map(|time| time.timestamp().max(0) as u64)
+        .unwrap_or_else(|_| Utc::now().timestamp().max(0) as u64);
+    proto_bytes(1, &proto_field(1, seconds))
+}
+fn antigravity_step(kind: u64, status: u64, time: &[u8], body: Vec<u8>) -> Vec<u8> {
+    proto_field(1, kind)
+        .into_iter()
+        .chain(proto_field(4, status))
+        .chain(proto_bytes(5, &proto_bytes(1, time)))
+        .chain(body)
+        .collect()
+}
+/// Publishes one conversation database and its summary using the fields Bridge reads back:
+/// user text, assistant text, tool call plus result, and execution errors.
+fn publish_antigravity(
+    source: &Session,
+    path: &Path,
+    id: &str,
+    cwd: &str,
+    home: &str,
+) -> Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let temp = path.with_extension("db.tmp");
+    let _ = fs::remove_file(&temp);
+    let connection = rusqlite::Connection::open(&temp)?;
+    // Match the smallest conversation the running Antigravity server recognizes:
+    // steps plus an empty trajectory blob and a type-0 trajectory row. The other
+    // tables stay empty; generation and executor metadata are not uniform.
+    connection.execute_batch(
+        "CREATE TABLE steps(idx INTEGER PRIMARY KEY, step_type INTEGER NOT NULL DEFAULT 0, status INTEGER NOT NULL DEFAULT 0, step_payload BLOB, step_format INTEGER NOT NULL DEFAULT 0, has_subtrajectory INTEGER NOT NULL DEFAULT 0, metadata BLOB, error_details BLOB, permissions BLOB, task_details BLOB, render_info BLOB);
+         CREATE INDEX idx_steps_status ON steps(status);
+         CREATE INDEX idx_steps_step_type ON steps(step_type);
+         CREATE TABLE trajectory_meta(trajectory_id TEXT PRIMARY KEY, cascade_id TEXT, trajectory_type INTEGER, source INTEGER);
+         CREATE TABLE trajectory_metadata_blob(id TEXT PRIMARY KEY DEFAULT 'main', data BLOB);
+         CREATE TABLE gen_metadata(idx INTEGER PRIMARY KEY, data BLOB, size INTEGER NOT NULL DEFAULT 0);
+         CREATE TABLE executor_metadata(idx INTEGER PRIMARY KEY, data BLOB);
+         CREATE TABLE parent_references(idx INTEGER PRIMARY KEY, data BLOB);
+         CREATE TABLE battle_mode_infos(idx INTEGER PRIMARY KEY, data BLOB);
+         INSERT INTO trajectory_metadata_blob(id, data) VALUES('main', X'');",
+    )?;
+    let trajectory_id = uuid::Uuid::new_v4().to_string();
+    connection.execute(
+        "INSERT INTO trajectory_meta(trajectory_id, cascade_id, trajectory_type, source) VALUES(?1, ?2, 0, 0)",
+        rusqlite::params![trajectory_id, id],
+    )?;
+    let mut index = 0i64;
+    let mut preview = String::new();
+    for message in &source.messages {
+        let time = antigravity_time(message);
+        match message.role.as_str() {
+            "user" => {
+                let text = message
+                    .blocks
+                    .iter()
+                    .filter(|block| block.kind == "text")
+                    .map(|block| block.text.as_str())
+                    .collect::<Vec<_>>()
+                    .join("\n");
+                if text.is_empty() {
+                    continue;
+                }
+                if preview.is_empty() {
+                    preview = text.chars().take(160).collect();
+                }
+                let body = proto_text(2, &text)
+                    .into_iter()
+                    .chain(proto_bytes(3, &proto_text(1, &text)))
+                    .collect::<Vec<_>>();
+                let payload = antigravity_step(14, 3, &time, proto_bytes(19, &body));
+                connection.execute(
+                    "INSERT INTO steps(idx,step_type,status,step_payload) VALUES(?1,14,3,?2)",
+                    rusqlite::params![index, payload],
+                )?;
+                index += 1;
+            }
+            "assistant" => {
+                for block in &message.blocks {
+                    let (kind, payload) = match block.kind.as_str() {
+                        "text" if !block.text.is_empty() && !block.is_error => (
+                            15i64,
+                            antigravity_step(
+                                15,
+                                3,
+                                &time,
+                                proto_bytes(20, &proto_text(1, &block.text)),
+                            ),
+                        ),
+                        "text" if !block.text.is_empty() => (
+                            17,
+                            antigravity_step(
+                                17,
+                                3,
+                                &time,
+                                proto_bytes(24, &proto_bytes(3, &proto_text(2, &block.text))),
+                            ),
+                        ),
+                        "toolCall" => {
+                            let Some((name, input)) = map_tool(block, Provider::Antigravity) else {
+                                continue;
+                            };
+                            let call = proto_text(1, &block.id)
+                                .into_iter()
+                                .chain(proto_text(2, &name))
+                                .chain(proto_text(3, &input.to_string()))
+                                .collect::<Vec<_>>();
+                            let mut meta = proto_bytes(1, &time);
+                            meta.extend(proto_bytes(4, &call));
+                            let mut body = proto_bytes(5, &meta);
+                            if let Some(text) = message_tool_result(source, &block.id) {
+                                body.extend(proto_bytes(
+                                    140,
+                                    &proto_bytes(2, &proto_text(1, &text)),
+                                ));
+                            }
+                            (
+                                132,
+                                proto_field(1, 132)
+                                    .into_iter()
+                                    .chain(proto_field(4, 3))
+                                    .chain(body)
+                                    .collect(),
+                            )
+                        }
+                        _ => continue,
+                    };
+                    connection.execute(
+                        "INSERT INTO steps(idx,step_type,status,step_payload) VALUES(?1,?2,3,?3)",
+                        rusqlite::params![index, kind, payload],
+                    )?;
+                    index += 1;
+                }
+            }
+            _ => {}
+        }
+    }
+    if index == 0 {
+        let _ = fs::remove_file(&temp);
+        return Err(error(
+            "No Antigravity messages can be written from this session",
+        ));
+    }
+    connection.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |_| Ok(()))?;
+    drop(connection);
+    fs::rename(&temp, path)?;
+    let summaries = Path::new(home).join("conversation_summaries.db");
+    if let Some(parent) = summaries.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let summary = rusqlite::Connection::open(&summaries)?;
+    summary.execute_batch(
+        "CREATE TABLE IF NOT EXISTS conversation_summaries(conversation_id TEXT PRIMARY KEY, title TEXT NOT NULL DEFAULT '', preview TEXT NOT NULL DEFAULT '', workspace_uris TEXT NOT NULL DEFAULT '[]')",
+    )?;
+    let mut columns = HashSet::new();
+    let mut names = summary.prepare("PRAGMA table_info(conversation_summaries)")?;
+    let rows = names.query_map([], |row| row.get::<_, String>(1))?;
+    for name in rows {
+        columns.insert(name?);
+    }
+    drop(names);
+    for (name, definition) in [
+        ("status", "TEXT NOT NULL DEFAULT ''"),
+        ("project_id", "TEXT NOT NULL DEFAULT ''"),
+        ("last_modified_time", "TEXT NOT NULL DEFAULT ''"),
+        ("last_user_input_time", "TEXT NOT NULL DEFAULT ''"),
+    ] {
+        if columns.insert(name.to_owned()) {
+            summary.execute(
+                &format!("ALTER TABLE conversation_summaries ADD COLUMN {name} {definition}"),
+                [],
+            )?;
+        }
+    }
+    let title = if source.summary.title.is_empty() {
+        preview.clone()
+    } else {
+        source.summary.title.clone()
+    };
+    let now = Utc::now().to_rfc3339();
+    let project_id = format!("{:x}", Sha256::digest(cwd.as_bytes()));
+    summary.execute(
+        "INSERT INTO conversation_summaries(conversation_id,title,preview,workspace_uris,status,project_id,last_modified_time,last_user_input_time) VALUES(?1,?2,?3,?4,'CASCADE_RUN_STATUS_IDLE',?5,?6,?6) ON CONFLICT(conversation_id) DO UPDATE SET title=excluded.title, preview=excluded.preview, workspace_uris=excluded.workspace_uris, project_id=excluded.project_id, last_modified_time=excluded.last_modified_time",
+        rusqlite::params![id, title, preview, json!([format!("file://{cwd}")]).to_string(), &project_id[..32], now],
+    )?;
+    Ok(())
+}
+fn message_tool_result(source: &Session, id: &str) -> Option<String> {
+    source
+        .messages
+        .iter()
+        .flat_map(|message| &message.blocks)
+        .find(|block| block.kind == "toolResult" && block.id == id && !block.text.is_empty())
+        .map(|block| block.text.clone())
+}
 fn project_slug(cwd: &str) -> String {
     cwd.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
@@ -345,7 +583,7 @@ pub fn execute(
         }
         let id = match request.target {
             Provider::Codex => uuid::Uuid::now_v7().to_string(),
-            Provider::Claude => uuid::Uuid::new_v4().to_string(),
+            Provider::Claude | Provider::Antigravity => uuid::Uuid::new_v4().to_string(),
         };
         let path = match request.target {
             Provider::Claude => PathBuf::from(&settings.claude_home)
@@ -359,10 +597,14 @@ pub fn execute(
                     "rollout-{}-{id}.jsonl",
                     Utc::now().format("%Y-%m-%dT%H-%M-%S")
                 )),
+            Provider::Antigravity => PathBuf::from(&settings.antigravity_home)
+                .join("conversations")
+                .join(format!("{id}.db")),
         };
         let records = match request.target {
             Provider::Claude => claude_records(&source, &id, &request.cwd),
             Provider::Codex => codex_records(&source, &id, &request.cwd),
+            Provider::Antigravity => Vec::new(),
         };
         let command = rpc::session_command(
             request.target,
@@ -395,7 +637,17 @@ pub fn execute(
             &operation_dir.join("intent.json"),
             &serde_json::to_vec(&json!({"result":result,"settings":settings}))?,
         )?;
-        archive::atomic_write(&path, &serialize_records(&records)?)?;
+        if request.target == Provider::Antigravity {
+            publish_antigravity(
+                &source,
+                &path,
+                &id,
+                &request.cwd,
+                &settings.antigravity_home,
+            )?;
+        } else {
+            archive::atomic_write(&path, &serialize_records(&records)?)?;
+        }
         if let Err(e) = verify_native(&result, &settings) {
             // These IDs and files were created by this operation only.
             if request.target == Provider::Codex {
