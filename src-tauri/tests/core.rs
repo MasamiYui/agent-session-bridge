@@ -278,29 +278,18 @@ fn project_sync_is_bidirectional_incremental_and_does_not_copy_generated_targets
         .unwrap();
     }
     let second = bridge_core::project_sync::plan(&store, &cwd).unwrap();
-    assert_eq!(
-        second.items.len(),
-        4,
-        "second plan: {}",
+    let count = |reason: &str| {
         second
             .items
             .iter()
-            .map(|item| format!(
-                "{}:{}->{} {} {} [{}]",
-                item.source.label(),
-                item.id,
-                item.target.label(),
-                item.mode,
-                item.action,
-                item.reason
-            ))
-            .collect::<Vec<_>>()
-            .join("; ")
-    );
-    assert!(second
-        .items
-        .iter()
-        .all(|item| item.action == "skip" && item.reason == "synced"));
+            .filter(|item| item.reason == reason)
+            .count()
+    };
+    // The two original sessions are synced. Each one published an Antigravity
+    // copy, and both copies stay visible but are excluded from reverse sync.
+    assert_eq!(count("synced"), 4);
+    assert_eq!(count("generated"), 4);
+    assert!(second.items.iter().all(|item| item.action == "skip"));
 
     let mut changed_records = claude_records;
     changed_records.push(json!({"type":"user","uuid":"new","parentUuid":"r","sessionId":"original","cwd":project,"timestamp":"2026-10-10T00:03:00Z","message":{"role":"user","content":"A new user request"}}));

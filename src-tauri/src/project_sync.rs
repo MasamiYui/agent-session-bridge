@@ -55,7 +55,14 @@ fn canonical(cwd: &str) -> Result<String> {
         .to_owned())
 }
 fn eligible(s: &SessionSummary, cwd: &str) -> bool {
-    s.cwd == cwd && !s.organization.archived && !s.organization.removed && !s.source_archived
+    // Compare canonical paths. A published copy records the canonical project
+    // directory, while callers may pass a path that still contains a symlink,
+    // such as macOS /var -> /private/var.
+    let same_project = canonical(&s.cwd)
+        .ok()
+        .zip(canonical(cwd).ok())
+        .is_some_and(|(session, project)| session == project);
+    same_project && !s.organization.archived && !s.organization.removed && !s.source_archived
 }
 fn targets(source: Provider) -> [Provider; 2] {
     match source {
@@ -130,10 +137,14 @@ pub fn plan(store: &Store, cwd: &str) -> Result<ProjectSyncPlan> {
     let verified = |provider| rpc::capability(provider, &settings).native_verified;
     let ops = operations(store)?;
     let mut items = Vec::new();
-    for summary in store.list("")?.into_iter().filter(|s| eligible(s, cwd)) {
+    for summary in store
+        .list("")?
+        .into_iter()
+        .filter(|s| eligible(s, &normalized))
+    {
         // Re-read pending sources so a same-millisecond append is not hidden by scan cache.
         let s = store.session(&summary.key)?;
-        if !eligible(&s.summary, cwd) {
+        if !eligible(&s.summary, &normalized) {
             continue;
         }
         for target in targets(s.summary.provider) {
@@ -163,7 +174,7 @@ pub fn execute(
 ) -> Result<MigrationResult> {
     let normalized = canonical(cwd)?;
     let s = store.session(&request.key)?;
-    if !eligible(&s.summary, cwd) {
+    if !eligible(&s.summary, &normalized) {
         return Err(error(
             "Session no longer belongs to this active project. Preview sync again.",
         ));
