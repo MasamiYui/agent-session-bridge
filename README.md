@@ -1,13 +1,13 @@
 # Agent Session Bridge
 
-A local desktop workspace for browsing, organizing and moving **Codex ↔ Claude Code** development sessions. Built with Tauri 2, React, TypeScript and Rust. [简体中文](README.zh-CN.md)
+A local desktop workspace for browsing, organizing and copying development sessions between **Codex**, **Claude Code** and **Antigravity**. Built with Tauri 2, React, TypeScript and Rust. [简体中文](README.zh-CN.md)
 
 ## Features
 
 - Three-pane workspace with project/source/date filters, title and full-text search, newest/oldest sorting and multi-selection.
 - Markdown reader with code, readable reasoning and expandable tool calls/results. Long conversations load in pages.
 - Aliases, tags, favorites, archive, remove and restore stored in Bridge's own SQLite database. Original sessions are preserved.
-- Native conversion creates a new session ID. Codex rollouts are registered through the official app-server; Bridge never writes Codex's SQLite database.
+- Native conversion creates a new session ID. Codex rollouts are registered through the official app-server; Bridge never writes Codex's SQLite database. Antigravity copies are new SQLite conversations under `~/.gemini/antigravity`.
 - Editable context handoff generated locally without a model call. Includes user requests, recent history, tool results and a full `.asb` backup.
 - Import JSONL and `.asb` with per-file preview. Export Markdown, original JSONL or portable `.asb` ZIP archives. Batch migration/export supports progress, cancellation of queued items and migration retries.
 - Chinese/English, system/light/dark themes, configurable source directories, CLI paths and export directory. Browsing/export works without either CLI.
@@ -41,12 +41,14 @@ npm run test:integration  # requires the exact supported CLIs; local mock model 
 
 ## Move a conversation
 
-1. Set source directories and CLI executables in **Settings**. Defaults are `~/.codex` and `~/.claude`, respecting `CODEX_HOME` / `CLAUDE_CONFIG_DIR`.
+1. Set source directories and CLI executables in **Settings**. Defaults are `~/.codex`, `~/.claude` and `~/.gemini/antigravity`, respecting `CODEX_HOME` / `CLAUDE_CONFIG_DIR`.
 2. Select a conversation or import `.jsonl` / `.asb`. Import first adds an owned copy to Bridge; choose **Bridge** to migrate it.
 3. Choose the target tool, an existing project directory, and **Native session** or **Context handoff**. Review the conversion report or edit the handoff document.
 4. Create the result. Copy the displayed resume command or open it in Terminal. Batch operations use the chosen project for all selected sessions.
 
-Native conversion is enabled for **Codex 0.160.1** and **Claude Code 2.1.280**. Both were tested on macOS with isolated configuration directories and a localhost mock model, including the next request carrying imported history. Other versions can browse/export and use handoff; they are not marked native-compatible. See [compatibility and validation](docs/compatibility.md).
+Native conversion is enabled for **Codex 0.160.1**, **Claude Code 2.1.280** and the local Antigravity SQLite store. The two CLIs were tested on macOS with isolated configuration directories and a localhost mock model, including the next request carrying imported history. Other CLI versions can browse/export and use handoff; they are not marked native-compatible.
+
+Antigravity 2.22.0 can read, search, export and hand off its local conversations. A native copy writes the decoded user, assistant, tool and error fields into a new conversation database. Its running language server only indexes conversations that already existed when it started, so restart Antigravity before expecting a new copy in its session list. There is no verified Antigravity resume command. See [compatibility and validation](docs/compatibility.md).
 
 ## Data and safety
 
@@ -64,7 +66,8 @@ Writes refuse to overwrite existing files and publish through temporary files/di
 - Encrypted reasoning, runtime permissions/state, subagent topology, image context and compaction boundaries are not reconstructed as live agent state. Sidechain raw files remain archival.
 - Handoff includes all user text blocks limited to 2,000 characters each and the latest 24 messages limited to 6,000 characters per block. The complete archive is linked in the saved document.
 - Native Claude conversion validates identity/JSONL structure on each write; the supported CLI version was tested separately with real resume/continuation. Bridge itself does not send a model request to verify each import.
-- No cloud upload, cross-device synchronization or continuous two-way message synchronization. Opening a target CLI and continuing it uses that tool's own configuration and billing.
+- Project sync copies each conversation to the other two agents. It creates a new copy when source history changes and never overwrites a source or a continued target. Bridge-generated copies are excluded from reverse sync.
+- No cloud upload, cross-device synchronization or continuous message synchronization. Opening a target CLI and continuing it uses that tool's own configuration and billing.
 
 ## Source layout
 
