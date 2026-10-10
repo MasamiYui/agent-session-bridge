@@ -23,7 +23,7 @@ cargo fmt --manifest-path src-tauri/Cargo.toml -- --check
 cargo clippy --manifest-path src-tauri/Cargo.toml --no-default-features --all-targets -- -D warnings
 ```
 
-Run one frontend test with `npx vitest run src/ProjectDirectory.test.ts`. Run one Rust test with `cargo test --manifest-path src-tauri/Cargo.toml --no-default-features -- <test_name>`. CI (`.github/workflows/ci.yml`) runs build, vitest, fmt, clippy, core, and GUI on Ubuntu, then bundles macOS/Windows/Linux. It uploads artifacts and does not publish a release. `test:integration` is not in CI.
+Run one frontend test with `npx vitest run src/ProjectDirectory.test.ts`. Run one Rust test with `cargo test --manifest-path src-tauri/Cargo.toml --no-default-features -- <test_name>`. CI (`.github/workflows/ci.yml`) runs build, vitest, fmt, clippy, core, and GUI on Ubuntu, then bundles macOS/Windows/Linux and uploads the installers. A `v*` tag also publishes a GitHub Release with those installers. `test:integration` is not in CI.
 
 `VITE_DEMO=1` switches `src/api.ts` to an in-memory fake and must not be set for production builds. Playwright sets it and serves `npm run dev` at `http://127.0.0.1:1420`. `ASB_DATA_DIR` overrides the app data directory (`desktop.rs` setup); use it to isolate tests from `~/Library/Application Support/io.github.masamiyui.agent-session-bridge`.
 

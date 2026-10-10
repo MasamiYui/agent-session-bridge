@@ -23,7 +23,14 @@ npm run desktop          # 启动桌面开发版
 npm run bundle           # 构建正式应用和安装包
 ```
 
-构建产物位于 `src-tauri/target/release/bundle/`：macOS 为 `.app` / `.dmg`，Windows 为 MSI / NSIS，Linux 为 deb / AppImage。本地 Mac 包未签名、公证，如系统提示，请在 Finder 中右键选择“打开”。CI 配置会构建三平台并上传构建产物，不自动发布 Release。
+构建产物位于 `src-tauri/target/release/bundle/`：macOS 为 `.app` / `.dmg`，Windows 为 MSI / NSIS，Linux 为 deb / AppImage。本地 Mac 包未签名、公证，如系统提示，请在 Finder 中右键选择“打开”。
+
+每次推送和 Pull Request 都会在 CI 中构建三个平台，并把安装包作为 workflow artifact 上传。推送 `v*` 标签（例如 `v0.1.0`）还会创建 GitHub Release，附带 `.dmg`、`.app.tar.gz`、NSIS `.exe`、`.msi`、`.deb` 和 `.AppImage`。标签必须与 `package.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml` 里的版本一致。
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
 
 ```sh
 npm run dev:demo         # 仅合成数据的浏览器演示

@@ -23,7 +23,14 @@ npm run desktop           # native development app
 npm run bundle            # production installers and app
 ```
 
-Packages appear under `src-tauri/target/release/bundle/`: macOS `.app`/`.dmg`, Windows MSI/NSIS, Linux deb/AppImage. Local macOS packages are unsigned and unnotarized; use Finder's Open action if macOS requests confirmation. CI builds all three platforms and uploads artifacts; it does not publish a release.
+Packages appear under `src-tauri/target/release/bundle/`: macOS `.app`/`.dmg`, Windows MSI/NSIS, Linux deb/AppImage. Local macOS packages are unsigned and unnotarized; use Finder's Open action if macOS requests confirmation.
+
+CI builds all three platforms on every push and pull request and uploads the installers as workflow artifacts. Pushing a `v*` tag (for example `v0.1.0`) also publishes a GitHub Release with the `.dmg`, `.app.tar.gz`, NSIS `.exe`, `.msi`, `.deb`, and `.AppImage`. The tag must match the version in `package.json`, `src-tauri/tauri.conf.json`, and `src-tauri/Cargo.toml`.
+
+```sh
+git tag v0.1.0
+git push origin v0.1.0
+```
 
 ```sh
 npm run dev:demo          # synthetic browser preview; no local session access
