@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="public/bridge-icon.svg" alt="Agent Session Bridge logo" width="96">
+</p>
+
 # Agent Session Bridge
 
 A local desktop workspace for browsing, organizing and copying development sessions between **Codex**, **Claude Code** and **Antigravity**. Built with Tauri 2, React, TypeScript and Rust. [简体中文](README.zh-CN.md)
@@ -12,6 +16,20 @@ A local desktop workspace for browsing, organizing and copying development sessi
 - Import JSONL and `.asb` with per-file preview. Export Markdown, original JSONL or portable `.asb` ZIP archives. Batch migration/export supports progress, cancellation of queued items and migration retries.
 - Chinese/English, system/light/dark themes, configurable source directories, CLI paths and export directory. Browsing/export works without either CLI.
 - Incremental background scans every 15 seconds, on-demand preview and a manual refresh button.
+
+## Screenshots
+
+The workspace, session reader and project sync. These are the demo's synthetic sessions, not a local session store.
+
+<p align="center">
+  <img src="docs/workspace.png" alt="Session list with Codex, Claude Code and Antigravity conversations" width="820">
+</p>
+<p align="center">
+  <img src="docs/reader.png" alt="Reader showing a conversation with a tool call and its result" width="820">
+</p>
+<p align="center">
+  <img src="docs/sync.png" alt="Project sync plan copying conversations between the three agents" width="820">
+</p>
 
 ## Run and build
 

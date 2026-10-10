@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="public/bridge-icon.svg" alt="Agent Session Bridge 标志" width="96">
+</p>
+
 # Agent Session Bridge
 
 本地管理并在 **Codex**、**Claude Code** 和 **Antigravity** 之间复制开发会话的桌面工具，基于 Tauri 2 + React + TypeScript + Rust。[English](README.md)
@@ -12,6 +16,20 @@
 - 导入 JSONL / `.asb` 前逐项预览；导出 Markdown、原始 JSONL、可重新导入的 `.asb` ZIP；批量迁移/导出展示进度，支持取消未执行项目和重试迁移失败项。
 - 中英切换、系统/浅色/深色主题；可配置会话目录、CLI 和导出目录；没有 CLI 仍能浏览、管理和导出。
 - 每 15 秒后台增量扫描，预览按需读取，也可手动刷新。
+
+## 截图
+
+工作台、会话阅读器和项目同步。图中是演示用的合成会话，不是本机会话。
+
+<p align="center">
+  <img src="docs/workspace.png" alt="会话列表，包含 Codex、Claude Code 和 Antigravity 的会话" width="820">
+</p>
+<p align="center">
+  <img src="docs/reader.png" alt="阅读器展示一段对话、工具调用及其结果" width="820">
+</p>
+<p align="center">
+  <img src="docs/sync.png" alt="项目同步计划，把会话复制到另外两个工具" width="820">
+</p>
 
 ## 开发与打包
 
