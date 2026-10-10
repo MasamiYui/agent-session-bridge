@@ -664,7 +664,7 @@ fn varint(bytes: &[u8], mut i: usize) -> Option<(u64, usize)> {
     }
     None
 }
-fn proto_bytes<'a>(fields: &'a [ProtoField], number: u64) -> Option<&'a [u8]> {
+fn proto_bytes(fields: &[ProtoField], number: u64) -> Option<&[u8]> {
     fields.iter().find_map(|field| match &field.value {
         ProtoValue::Bytes(bytes) if field.number == number => Some(bytes.as_slice()),
         _ => None,
