@@ -245,6 +245,7 @@ fn project_sync_is_bidirectional_incremental_and_does_not_copy_generated_targets
         .save_settings(&Settings {
             claude_home: t.path().join("claude").to_string_lossy().into(),
             codex_home: t.path().join("codex").to_string_lossy().into(),
+            antigravity_home: t.path().join("antigravity").to_string_lossy().into(),
             codex_bin: "missing-codex".into(),
             claude_bin: "missing-claude".into(),
             ..Default::default()
