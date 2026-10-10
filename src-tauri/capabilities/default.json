@@ -1,0 +1,1 @@
+{"identifier":"default","description":"Local desktop window and file pickers","windows":["main"],"permissions":["core:default","dialog:allow-open","dialog:allow-save"]}

@@ -1,0 +1,11 @@
+node_modules/
+dist/
+src-tauri/target/
+*.log
+.DS_Store
+test-results/
+playwright-report/
+artifacts/
+.playwright-cli/
+output/
+*.tsbuildinfo
