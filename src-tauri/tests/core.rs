@@ -216,6 +216,140 @@ fn handoff_is_editable_and_duplicate_import_reuses_result() {
     assert_eq!(r.operation_id, r2.operation_id);
 }
 #[test]
+fn project_sync_is_bidirectional_incremental_and_does_not_copy_generated_targets() {
+    let t = tempfile::tempdir().unwrap();
+    let project = t.path().join("project");
+    fs::create_dir(&project).unwrap();
+    let claude = t
+        .path()
+        .join("claude/projects")
+        .join(project.display().to_string().replace('/', "-"))
+        .join("source.jsonl");
+    let codex = t.path().join("codex/sessions/2026/10/10/rollout.jsonl");
+    let mut claude_records = claude_fixture();
+    for record in &mut claude_records {
+        if let Some(object) = record.as_object_mut() {
+            object.insert("cwd".into(), json!(project));
+        }
+    }
+    write(&claude, &claude_records);
+    write(
+        &codex,
+        &[
+            json!({"type":"session_meta","payload":{"id":"codex-source","cwd":project,"originator":"codex"}}),
+            json!({"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"Codex request"}]}}),
+        ],
+    );
+    let store = Store::new(t.path().join("bridge")).unwrap();
+    store
+        .save_settings(&Settings {
+            claude_home: t.path().join("claude").to_string_lossy().into(),
+            codex_home: t.path().join("codex").to_string_lossy().into(),
+            codex_bin: "missing-codex".into(),
+            claude_bin: "missing-claude".into(),
+            ..Default::default()
+        })
+        .unwrap();
+    let cwd = project.to_string_lossy().into_owned();
+    let first = bridge_core::project_sync::plan(&store, &cwd).unwrap();
+    assert_eq!(first.items.len(), 2);
+    assert!(first
+        .items
+        .iter()
+        .all(|item| item.action == "create" && item.mode == "handoff"));
+    for item in &first.items {
+        bridge_core::project_sync::execute(
+            &store,
+            &cwd,
+            &MigrationRequest {
+                key: item.key.clone(),
+                target: item.target,
+                mode: item.mode.clone(),
+                cwd: cwd.clone(),
+                duplicate: false,
+                handoff_text: None,
+            },
+            &item.fingerprint,
+        )
+        .unwrap();
+    }
+    let second = bridge_core::project_sync::plan(&store, &cwd).unwrap();
+    assert_eq!(second.items.len(), 2);
+    assert!(second
+        .items
+        .iter()
+        .all(|item| item.action == "skip" && item.reason == "synced"));
+
+    let mut changed_records = claude_records;
+    changed_records.push(json!({"type":"user","uuid":"new","parentUuid":"r","sessionId":"original","cwd":project,"timestamp":"2026-10-10T00:03:00Z","message":{"role":"user","content":"A new user request"}}));
+    write(&claude, &changed_records);
+    let later = std::time::SystemTime::UNIX_EPOCH + std::time::Duration::from_secs(4_000_000_000);
+    fs::File::open(&claude)
+        .unwrap()
+        .set_modified(later)
+        .unwrap();
+    let changed = bridge_core::project_sync::plan(&store, &cwd).unwrap();
+    assert_eq!(
+        changed
+            .items
+            .iter()
+            .filter(|item| item.action == "create")
+            .count(),
+        1
+    );
+
+    let generated = t.path().join("codex/sessions/2026/10/10/generated.jsonl");
+    write(
+        &generated,
+        &migration::codex_records(&parser::parse(&claude, None).unwrap(), "generated-id", &cwd),
+    );
+    let result = MigrationResult {
+        operation_id: "origin".into(),
+        target_id: "generated-id".into(),
+        target_path: generated.to_string_lossy().into(),
+        resume_command: String::new(),
+        cwd: cwd.clone(),
+        reused: false,
+        warnings: Vec::new(),
+        mode: "native".into(),
+        provider: Provider::Codex,
+    };
+    store
+        .connect()
+        .unwrap()
+        .execute(
+            "INSERT INTO operations(id,identity,status,request,result,created_at) VALUES('origin','generated','completed',?1,?2,'2026-10-10T00:00:00Z')",
+            rusqlite::params![
+                serde_json::json!({"key":"generated","target":"claude","mode":"native","cwd":cwd,"duplicate":false}).to_string(),
+                serde_json::to_string(&result).unwrap()
+            ],
+        )
+        .unwrap();
+    store.scan().unwrap();
+    let generated_item = bridge_core::project_sync::plan(&store, &cwd)
+        .unwrap()
+        .items
+        .into_iter()
+        .find(|item| item.id == "generated-id")
+        .unwrap();
+    assert_eq!(generated_item.reason, "generated");
+    let blocked = bridge_core::project_sync::execute(
+        &store,
+        &cwd,
+        &MigrationRequest {
+            key: generated_item.key,
+            target: generated_item.target,
+            mode: generated_item.mode,
+            cwd: cwd.clone(),
+            duplicate: false,
+            handoff_text: None,
+        },
+        &generated_item.fingerprint,
+    )
+    .unwrap_err();
+    assert!(blocked.to_string().contains("generated"));
+}
+#[test]
 fn thousand_sessions_and_large_transcript_can_be_indexed() {
     let t = tempfile::tempdir().unwrap();
     let p = t.path().join("large.jsonl");

@@ -1,4 +1,4 @@
-use crate::{archive, migration, model::*, rpc, store::Store};
+use crate::{archive, migration, model::*, project_sync, rpc, store::Store};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::HashMap,
@@ -133,10 +133,55 @@ struct JobItem {
     fingerprint: String,
 }
 #[tauri::command]
+async fn project_sync_plan(
+    state: State<'_, AppState>,
+    cwd: String,
+) -> std::result::Result<ProjectSyncPlan, String> {
+    let store = state.store.clone();
+    let lock = state.operation_lock.clone();
+    work(move || {
+        let _guard = lock.lock().unwrap_or_else(|e| e.into_inner());
+        project_sync::plan(&store, &cwd)
+    })
+    .await
+}
+#[tauri::command]
+async fn start_project_sync(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    plan: ProjectSyncPlan,
+) -> std::result::Result<String, String> {
+    project_sync::validate_items(&plan.items).map_err(|e| e.to_string())?;
+    let items = plan
+        .items
+        .into_iter()
+        .map(|item| JobItem {
+            request: MigrationRequest {
+                key: item.key,
+                target: item.target,
+                mode: item.mode,
+                cwd: plan.cwd.clone(),
+                duplicate: false,
+                handoff_text: None,
+            },
+            fingerprint: item.fingerprint,
+        })
+        .collect();
+    run_migrations(app, state, items, Some(plan.cwd)).await
+}
+#[tauri::command]
 async fn start_migrations(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
     items: Vec<JobItem>,
+) -> std::result::Result<String, String> {
+    run_migrations(app, state, items, None).await
+}
+async fn run_migrations(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    items: Vec<JobItem>,
+    project: Option<String>,
 ) -> std::result::Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
     let cancelled = Arc::new(AtomicBool::new(false));
@@ -179,7 +224,10 @@ async fn start_migrations(
                     path: None,
                 },
             );
-            let result = migration::execute(&store, &item.request, &item.fingerprint);
+            let result = match &project {
+                Some(cwd) => project_sync::execute(&store, cwd, &item.request, &item.fingerprint),
+                None => migration::execute(&store, &item.request, &item.fingerprint),
+            };
             let (status, error, result) = match result {
                 Ok(r) => ("completed", None, Some(r)),
                 Err(e) => ("failed", Some(e.to_string()), None),
@@ -196,6 +244,9 @@ async fn start_migrations(
                     path: None,
                 },
             );
+        }
+        if project.is_some() {
+            let _ = store.scan();
         }
         let _ = app.emit(
             "job-progress",
@@ -408,6 +459,8 @@ pub fn run() {
             save_settings,
             capabilities,
             migration_plan,
+            project_sync_plan,
+            start_project_sync,
             preview_import,
             import_file,
             export_session,

@@ -4,5 +4,6 @@ pub mod desktop;
 pub mod migration;
 pub mod model;
 pub mod parser;
+pub mod project_sync;
 pub mod rpc;
 pub mod store;

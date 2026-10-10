@@ -35,7 +35,7 @@ test('browse projects, combine source filters and return to the searched directo
  await expect(page.locator('.project-row')).toHaveCount(3);
  await page.getByRole('textbox',{name:'Search projects…'}).fill('/workspace/bridge');
  await expect(page.locator('.project-row')).toHaveCount(1);
- await page.locator('.project-row').click();
+ await page.locator('.project-open').click();
  await expect(page.locator('.session-row')).toHaveCount(3);
  await page.getByLabel('Source',{exact:true}).selectOption('claude');
  await expect(page.locator('.session-row')).toHaveCount(2);
@@ -46,7 +46,7 @@ test('browse projects, combine source filters and return to the searched directo
  await expect(page.getByRole('textbox',{name:'Search projects…'})).toHaveValue('/workspace/bridge');
  await expect(page.locator('.project-row')).toHaveCount(1);
  await expect(page.locator('.reader-header')).toHaveCount(0);
- await page.locator('.project-row').click();
+ await page.locator('.project-open').click();
  await expect(page.getByLabel('Source',{exact:true})).toHaveValue('');
  await expect(page.locator('.session-row')).toHaveCount(3);
 });
@@ -73,7 +73,7 @@ test('returning from a project restores directory scroll position',async({page})
  await row.scrollIntoViewIfNeeded();
  const position=await page.locator('.project-list').evaluate(el=>el.scrollTop);
  expect(position).toBeGreaterThan(0);
- await row.click();
+ await row.locator('.project-open').click();
  await page.getByRole('button',{name:'Back to projects',exact:true}).click();
  await expect.poll(()=>page.locator('.project-list').evaluate(el=>el.scrollTop)).toBe(position);
 });
@@ -85,9 +85,22 @@ test('project navigation remains usable in a short laptop window',async({page})=
  const dimensions=await page.evaluate(()=>({width:document.documentElement.clientWidth,scroll:document.documentElement.scrollWidth,rail:document.querySelector('.sidebar')!.getBoundingClientRect().width}));
  expect(dimensions.scroll).toBe(dimensions.width);
  expect(dimensions.rail).toBeLessThanOrEqual(96);
- await page.locator('.project-row').first().click();
+ await page.locator('.project-open').first().click();
  await expect(page.getByRole('button',{name:'Back to projects',exact:true})).toBeInViewport();
  await expect(page.getByLabel('Source',{exact:true})).toBeInViewport();
+});
+test('project sync previews both directions and skips completed versions',async({page})=>{
+ await page.getByRole('button',{name:'Projects',exact:true}).click();
+ await page.getByRole('button',{name:'Sync project bridge',exact:true}).click();
+ await expect(page.getByRole('dialog',{name:'Sync project'})).toContainText('/workspace/bridge');
+ await expect(page.getByRole('dialog')).toContainText('2 to sync / 2 sessions');
+ await expect(page.getByRole('dialog')).toContainText('1 to sync / 1 sessions');
+ await page.getByRole('button',{name:'Start sync',exact:true}).click();
+ await expect(page.locator('.job-row')).toHaveCount(3);
+ await expect(page.locator('.job-row').last()).toContainText('Completed');
+ await page.getByRole('button',{name:'Sync project bridge',exact:true}).click();
+ await expect(page.getByRole('dialog')).toContainText('No new conversations to sync.');
+ await expect(page.getByRole('button',{name:'Start sync',exact:true})).toBeDisabled();
 });
 test('batch handoff reports completion and blocks unverified native conversion',async({page})=>{
  await page.getByRole('button',{name:'Select visible',exact:true}).click();

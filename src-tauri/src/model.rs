@@ -171,6 +171,25 @@ pub struct MigrationPlan {
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ProjectSyncItem {
+    pub key: String,
+    pub id: String,
+    pub title: String,
+    pub source: Provider,
+    pub target: Provider,
+    pub mode: String,
+    pub action: String,
+    pub fingerprint: String,
+    pub reason: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ProjectSyncPlan {
+    pub cwd: String,
+    pub items: Vec<ProjectSyncItem>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MigrationResult {
     pub operation_id: String,
     pub target_id: String,

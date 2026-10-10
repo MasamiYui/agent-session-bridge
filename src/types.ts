@@ -12,3 +12,6 @@ export interface MigrationResult {operationId:string;targetId:string;targetPath:
 export interface JobItem {request:MigrationRequest;fingerprint:string}
 export interface JobEvent {jobId:string;index:number;total:number;status:string;error?:string;result?:MigrationResult;path?:string}
 export interface Operation {id:string;status:string;result:string|null;createdAt:string}
+export interface ProjectSyncItem {key:string;id:string;title:string;source:Provider;target:Provider;mode:'native'|'handoff';action:'create'|'skip';fingerprint:string;reason:''|'generated'|'synced'|'recovery'}
+export interface ProjectSyncPlan {cwd:string;items:ProjectSyncItem[]}
+

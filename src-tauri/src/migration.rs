@@ -258,6 +258,9 @@ fn project_slug(cwd: &str) -> String {
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .collect()
 }
+pub fn identity(fingerprint: &str, target: Provider, mode: &str, cwd: &str) -> String {
+    format!("{}:{}:{}:{}", fingerprint, target.label(), mode, cwd)
+}
 pub fn execute(
     store: &Store,
     request: &MigrationRequest,
@@ -282,12 +285,11 @@ pub fn execute(
         .to_owned();
     let request = &normalized;
     let settings = store.settings()?;
-    let identity = format!(
-        "{}:{}:{}:{}",
-        source.summary.fingerprint,
-        request.target.label(),
-        request.mode,
-        request.cwd
+    let identity = identity(
+        &source.summary.fingerprint,
+        request.target,
+        &request.mode,
+        &request.cwd,
     );
     let c = store.connect()?;
     if !request.duplicate {
