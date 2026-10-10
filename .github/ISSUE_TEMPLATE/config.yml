@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Compatibility
+    url: https://github.com/MasamiYui/agent-session-bridge/blob/main/docs/compatibility.md
+    about: Check which CLI versions support native conversion before reporting one as unsupported

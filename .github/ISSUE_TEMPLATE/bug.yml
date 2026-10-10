@@ -1,0 +1,54 @@
+name: Bug report
+description: Something reads, copies, or displays a session incorrectly
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - Codex
+        - Claude Code
+        - Antigravity
+        - Project sync
+        - Import or export
+        - Desktop interface
+        - Packaging
+    validations:
+      required: true
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: Describe the result and what you expected. Do not paste private prompts, source code, or tool output.
+    validations:
+      required: true
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      description: Bridge version and the Codex, Claude Code, or Antigravity version involved.
+      placeholder: "Bridge 0.1.0, Claude Code 2.1.280"
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - macOS
+        - Windows
+        - Linux
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
